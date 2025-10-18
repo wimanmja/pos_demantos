@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "781126285236",
+    "project_id": "posrestoapp",
+    "storage_bucket": "posrestoapp.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:781126285236:android:585da51656cff3a08aa4e1",
+        "android_client_info": {
+          "package_name": "com.example.pos_demantos"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAZMfXX6_4d8EG9hYdl3RCEej7zVp98MoE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
