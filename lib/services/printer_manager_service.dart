@@ -185,8 +185,8 @@ class PrinterManagerService {
       String? tableNumber = receiptData['tableNumber'];
       String? customerName = receiptData['customerName'];
       
-      // Helper untuk format Rupiah tanpa desimal
-      String formatPrice(double price) => price.toStringAsFixed(0);
+      // Helper untuk format Rupiah dengan pemisah ribuan (titik)
+      String formatPrice(double price) => NumberFormat.decimalPattern('id_ID').format(price);
 
       // Header
       list.add(LineText(

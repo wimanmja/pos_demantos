@@ -1,6 +1,7 @@
-import 'dart:async'; // <--- IMPORT WAJIB UNTUK TIMER
+import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
 import 'package:pos_demantos/models/category_model.dart';
 import 'package:pos_demantos/models/menu_item_model.dart';
 import 'package:pos_demantos/models/menu_option_model.dart';
@@ -10,6 +11,9 @@ import 'package:pos_demantos/screens/order_confirmation_page.dart';
 import 'package:pos_demantos/screens/start_transaction_dialog.dart';
 import 'package:pos_demantos/services/menu_service.dart';
 import 'package:provider/provider.dart';
+
+// Asumsi: Model Category, MenuItem, MenuOption, SaleItem, CartProvider, 
+// OrderConfirmationPageUpdated, StartTransactionDialog, dan MenuService sudah ada.
 
 class POSScreen extends StatefulWidget {
   final String? tableNumber;
@@ -29,9 +33,8 @@ class _POSScreenState extends State<POSScreen> {
   final MenuService _menuService = MenuService();
 
   // --- CACHING GLOBAL (INTERNAL) ---
-  static bool _isMenuDataCached = false;
-  static List<Category> _cachedCategories = [];
-  static List<MenuItem> _cachedAllMenuItems = [];
+  // Variabel caching statis dihapus karena logikanya sudah dipindahkan ke MenuService
+  // dan _menuService.loadAllDataGlobally() seharusnya menangani caching.
 
   // --- STATE LOKAL ---
   List<Category> _categories = [];
@@ -57,10 +60,10 @@ class _POSScreenState extends State<POSScreen> {
     super.initState();
     _billContainerHeight =
         _billContainerHeight.clamp(_minBillHeight, _maxBillHeight);
-    
+
     // Memuat data secara kondisional
-    _loadInitialData(); 
-    
+    _loadInitialData();
+
     _searchController.addListener(_onSearchChanged);
   }
 
@@ -71,7 +74,8 @@ class _POSScreenState extends State<POSScreen> {
     super.dispose();
   }
 
-  // Mengubah _onSearchChanged untuk menggunakan Debouncing (Koreksi error Timer)
+  // --- LOGIC SEARCH & DATA LOADING (TIDAK BERUBAH SIGNIFIKAN) ---
+
   void _onSearchChanged() {
     if (_debounce?.isActive ?? false) _debounce!.cancel();
 
@@ -88,12 +92,11 @@ class _POSScreenState extends State<POSScreen> {
 
       setState(() {
         _isSearching = true;
-        _searchResults = _performAdvancedSearch(query); // <--- Koreksi error undefined_method
+        _searchResults = _performAdvancedSearch(query);
       });
     });
   }
 
-  // FUNGSI PENCARIAN ADVANCED (DIKEMBALIKAN)
   List<MenuItem> _performAdvancedSearch(String query) {
     return _allMenuItems.where((item) {
       return _itemMatchesQuery(item, query);
@@ -159,14 +162,14 @@ class _POSScreenState extends State<POSScreen> {
     return score;
   }
 
-  void _clearSearch() { // <--- Koreksi error undefined_identifier
+  void _clearSearch() {
     _searchController.clear();
     setState(() {
       _isSearching = false;
       _searchResults.clear();
     });
   }
-  
+
   Future<void> _loadInitialData() async {
     setState(() {
       _isLoading = true;
@@ -175,12 +178,12 @@ class _POSScreenState extends State<POSScreen> {
 
     try {
       // 1. Panggil fungsi di Service. Service yang akan memutuskan apakah menggunakan cache atau Firestore.
-      await _menuService.loadAllDataGlobally(); 
+      await _menuService.loadAllDataGlobally();
 
       // 2. Ambil data dari cache service setelah dimuat
       _categories = _menuService.getAllCategories();
       _allMenuItems = _menuService.getAllItems();
-      
+
       // 3. Terapkan filter kategori awal
       if (_categories.isNotEmpty) {
         _selectedCategory = _categories.first;
@@ -188,7 +191,6 @@ class _POSScreenState extends State<POSScreen> {
             .where((item) => item.categoryId == _selectedCategory!.id)
             .toList();
       }
-
     } catch (e) {
       setState(() {
         _errorMessage = 'Gagal memuat data menu: ${e.toString()}';
@@ -199,41 +201,7 @@ class _POSScreenState extends State<POSScreen> {
       });
     }
   }
-  
-  Future<void> _loadCategoriesFromFirestore() async {
-     final snapshot =
-        await FirebaseFirestore.instance.collection('categories').get();
-     _categories = snapshot.docs.map((doc) => Category.fromMap(doc.data())).toList();
-  }
 
-  // Implementasi Parallel Fetching untuk item dan opsi (Opsi A)
-  Future<void> _loadAllMenuItemsParallel() async {
-    List<MenuItem> allItems = [];
-    
-    List<Future<List<MenuItem>>> itemFutures = _categories.map((category) {
-      return _menuService.getMenuItemsFromFirestore(category.id);
-    }).toList();
-
-    List<List<MenuItem>> results = await Future.wait(itemFutures);
-    for (var itemList in results) {
-      allItems.addAll(itemList);
-    }
-
-    List<Future<List<MenuOption>>> optionFutures = allItems.map((item) {
-      return _menuService.getMenuOptionsFromFirestore(item.id);
-    }).toList();
-
-    List<List<MenuOption>> optionResults = await Future.wait(optionFutures);
-
-    List<MenuItem> itemsWithOption = [];
-    for (int i = 0; i < allItems.length; i++) {
-      itemsWithOption.add(allItems[i].copyWith(options: optionResults[i]));
-    }
-
-    _allMenuItems = itemsWithOption;
-  }
-  
-  // Mengganti _loadMenuItems lama menjadi fungsi filter dari cache
   Future<void> _loadMenuItems(String categoryId) async {
     setState(() {
       _isLoading = true;
@@ -241,26 +209,24 @@ class _POSScreenState extends State<POSScreen> {
     });
 
     // Filtering dari data yang sudah ada di memori
-    final items = _allMenuItems.where((item) => item.categoryId == categoryId).toList();
-    
+    final items =
+        _allMenuItems.where((item) => item.categoryId == categoryId).toList();
+
     // Perbarui state lokal
     setState(() {
       _menuItems = items;
       _isLoading = false;
     });
   }
-  
-  // Fungsi refresh di AppBar memuat ulang data menu dari Firestore
+
   Future<void> _refreshData() async {
-    _isMenuDataCached = false; // Reset cache flag untuk memicu fetch ulang
-    _cachedCategories.clear();
-    _cachedAllMenuItems.clear(); // Menggunakan .clear() lebih aman
+    // Memaksa service untuk memuat ulang data dari Firestore
+    _menuService.clearCache(); 
     await _loadInitialData();
   }
-  
-  Future<void> _loadCategories() => _refreshData(); // Tombol refresh memanggil ini
 
-  // FUNGSI _addItemToOrder (DIKEMBALIKAN)
+  // --- LOGIC CART & DIALOG (TIDAK BERUBAH) ---
+
   void _addItemToOrder(MenuItem item, {List<MenuOption>? selectedOptions}) {
     final cart = Provider.of<CartProvider>(context, listen: false);
 
@@ -291,8 +257,7 @@ class _POSScreenState extends State<POSScreen> {
     );
   }
 
-  // FUNGSI _showMenuOptionDialog (DIKEMBALIKAN)
-  Future<void> _showMenuOptionDialog(MenuItem item) async { // <--- Koreksi error undefined_method
+  Future<void> _showMenuOptionDialog(MenuItem item) async {
     if (item.options == null || item.options!.isEmpty) {
       _addItemToOrder(item);
       return;
@@ -325,7 +290,7 @@ class _POSScreenState extends State<POSScreen> {
                         return DropdownMenuItem(
                           value: option.id,
                           child: Text(
-                              '${option.name} (+Rp ${option.priceAdjustment.toStringAsFixed(0)})'),
+                              '${option.name} (+Rp ${NumberFormat.decimalPattern('id_ID').format(option.priceAdjustment)})'),
                         );
                       }).toList(),
                       onChanged: (value) {
@@ -357,8 +322,8 @@ class _POSScreenState extends State<POSScreen> {
                           _selectedOptionsForDialog
                               .removeWhere((o) => o.type == 'temperature');
                           if (value != null) {
-                            _selectedOptionsForDialog.add(
-                                tempOptions.firstWhere((o) => o.id == value));
+                            _selectedOptionsForDialog.add(tempOptions
+                                .firstWhere((o) => o.id == value));
                           }
                         });
                       },
@@ -386,12 +351,13 @@ class _POSScreenState extends State<POSScreen> {
     );
   }
 
-  // FUNGSI _buildMenuGrid (DIKEMBALIKAN)
+  // --- FUNGSI _buildMenuGrid (TIDAK BERUBAH) ---
+
   Widget _buildMenuGrid(List<MenuItem> items) {
     return GridView.builder(
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
-        childAspectRatio: 0.75,
+        childAspectRatio: 0.65, // Dibuat lebih tinggi agar item terlihat
         crossAxisSpacing: 12,
         mainAxisSpacing: 12,
       ),
@@ -456,12 +422,12 @@ class _POSScreenState extends State<POSScreen> {
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                                fontWeight: FontWeight.bold, fontSize: 11)),
+                                fontWeight: FontWeight.bold, fontSize: 13)), // Sedikit diperbesar
                         const Spacer(),
-                        Text('Rp ${item.price.toStringAsFixed(0)}',
+                        Text('Rp ${NumberFormat.decimalPattern('id_ID').format(item.price)}',
                             style: TextStyle(
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
+                                fontSize: 12, // Sedikit diperbesar
+                                fontWeight: FontWeight.w700,
                                 color: item.isAvailable
                                     ? Colors.green[700]
                                     : Colors.grey)),
@@ -477,7 +443,7 @@ class _POSScreenState extends State<POSScreen> {
     );
   }
 
-  // --- UI BUILDER ---
+  // --- UI BUILDER (MODERNISASI APLIKASI) ---
 
   @override
   Widget build(BuildContext context) {
@@ -485,38 +451,44 @@ class _POSScreenState extends State<POSScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Sistem POS'),
-        backgroundColor: Colors.blue,
+        title: const Text('Sistem POS', style: TextStyle(fontWeight: FontWeight.w600)),
+        backgroundColor: Colors.blue[700], // Biru yang lebih dalam
         foregroundColor: Colors.white,
         actions: [
           IconButton(
-              icon: const Icon(Icons.refresh), onPressed: _refreshData), // Menggunakan _refreshData
+              icon: const Icon(Icons.refresh), onPressed: _refreshData),
         ],
       ),
       body: Column(
         children: [
-          // Header: customer info + search + kategori (Tidak ada perubahan di sini)
+          // Header: customer info + search + kategori
           Container(
             padding: const EdgeInsets.all(16),
-            color: Colors.blue[50],
+            color: Colors.white, // Pindahkan warna latar ke body jika perlu
             child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    if (widget.tableNumber != null) ...[
-                      const Icon(Icons.table_restaurant, size: 18),
-                      const SizedBox(width: 4),
-                      Text("Meja: ${widget.tableNumber}"),
-                      const SizedBox(width: 12),
+                // Info Pelanggan
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Row(
+                    children: [
+                      if (widget.tableNumber != null) ...[
+                        Icon(Icons.table_restaurant, size: 18, color: Colors.blue[700]),
+                        const SizedBox(width: 4),
+                        Text("Meja: ${widget.tableNumber}", style: const TextStyle(fontWeight: FontWeight.w500)),
+                        const SizedBox(width: 12),
+                      ],
+                      if (widget.customerName != null) ...[
+                        const Icon(Icons.person, size: 18, color: Colors.black54),
+                        const SizedBox(width: 4),
+                        Text("Pelanggan: ${widget.customerName}", style: const TextStyle(fontWeight: FontWeight.w500)),
+                      ],
                     ],
-                    if (widget.customerName != null) ...[
-                      const Icon(Icons.person, size: 18),
-                      const SizedBox(width: 4),
-                      Text("Pelanggan: ${widget.customerName}"),
-                    ],
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 8),
+
+                // Search Bar
                 TextField(
                   controller: _searchController,
                   decoration: InputDecoration(
@@ -529,29 +501,47 @@ class _POSScreenState extends State<POSScreen> {
                           )
                         : null,
                     filled: true,
-                    fillColor: Colors.white,
+                    fillColor: Colors.grey[100], // Warna isian yang lebih kalem
+                    contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 10),
                     border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(8)),
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide.none), // Borderless look
                   ),
                 ),
-                const SizedBox(height: 8),
-                if (!_isSearching)
-                  DropdownButton<Category>(
-                    value: _selectedCategory,
-                    isExpanded: true,
-                    hint: const Text("Pilih kategori"),
-                    items: _categories.map((cat) {
-                      return DropdownMenuItem(
-                        value: cat,
-                        child: Text(cat.name),
-                      );
-                    }).toList(),
-                    onChanged: (cat) {
-                      if (cat != null) {
-                        setState(() => _selectedCategory = cat);
-                        _loadMenuItems(cat.id);
-                      }
-                    },
+                const SizedBox(height: 12),
+
+                // Kategori dengan ChoiceChip (Modernisasi)
+                if (!_isSearching && _categories.isNotEmpty)
+                  SizedBox(
+                    height: 40,
+                    child: ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _categories.length,
+                      itemBuilder: (context, index) {
+                        final cat = _categories[index];
+                        final isSelected = cat.id == _selectedCategory?.id;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8.0),
+                          child: ChoiceChip(
+                            label: Text(cat.name, 
+                              style: TextStyle(
+                                  color: isSelected ? Colors.white : Colors.black87, 
+                                  fontWeight: FontWeight.w500
+                              ),
+                            ),
+                            selected: isSelected,
+                            selectedColor: Colors.blue[700], // Warna chip saat dipilih
+                            backgroundColor: Colors.grey[200],
+                            onSelected: (_) {
+                              if (!isSelected) { // Cegah reload jika kategori sama
+                                setState(() => _selectedCategory = cat);
+                                _loadMenuItems(cat.id);
+                              }
+                            },
+                          ),
+                        );
+                      },
+                    ),
                   ),
               ],
             ),
@@ -561,12 +551,17 @@ class _POSScreenState extends State<POSScreen> {
           Expanded(
             child: _isLoading
                 ? const Center(child: CircularProgressIndicator())
-                : _isSearching
-                    ? _buildMenuGrid(_searchResults)
-                    : _buildMenuGrid(_menuItems),
+                : _errorMessage != null
+                    ? Center(
+                        child: Text(_errorMessage!,
+                            style: const TextStyle(color: Colors.red)),
+                      )
+                    : _isSearching
+                        ? _buildMenuGrid(_searchResults)
+                        : _buildMenuGrid(_menuItems),
           ),
 
-          // Divider draggable (Tidak ada perubahan)
+          // Divider draggable
           GestureDetector(
             onPanUpdate: (details) {
               setState(() {
@@ -582,7 +577,10 @@ class _POSScreenState extends State<POSScreen> {
                 child: Container(
                   width: 40,
                   height: 4,
-                  color: Colors.grey,
+                  decoration: BoxDecoration(
+                    color: Colors.grey,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
                 ),
               ),
             ),
@@ -591,96 +589,140 @@ class _POSScreenState extends State<POSScreen> {
           // Bill container
           Container(
             height: _billContainerHeight,
-            color: Colors.white,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 4,
+                  offset: Offset(0, -2),
+                ),
+              ],
+            ),
             child: Column(
               children: [
+                // Header Keranjang
                 Container(
                   padding: const EdgeInsets.all(12),
-                  color: Colors.orange[50],
+                  color: Colors.orange[50], // Warna yang lebih lembut
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text("Keranjang",
-                          style: TextStyle(fontWeight: FontWeight.bold)),
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 16)),
                       Text(
-                        "Total: Rp ${cart.totalAmount.toStringAsFixed(0)}",
-                        style: const TextStyle(
-                            fontWeight: FontWeight.bold, color: Colors.green),
+                        "Total: Rp ${NumberFormat.decimalPattern('id_ID').format(cart.totalAmount)}",
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: Colors.green[700],
+                            fontSize: 16),
                       ),
                     ],
                   ),
                 ),
                 Expanded(
-                  child: ListView.builder(
-                    itemCount: cart.items.length,
-                    itemBuilder: (context, i) {
-                      final item = cart.items[i];
-                      return ListTile(
-                        title: Text(item.itemName),
-                        subtitle: Text("Rp ${item.unitPrice.toStringAsFixed(0)} / pcs"),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            // TOMBOL KURANG (DECREMENT)
-                            IconButton(
-                              icon: Icon(
-                                item.quantity > 1 ? Icons.remove_circle_outline : Icons.delete,
-                                color: item.quantity > 1 ? Colors.orange : Colors.red,
+                  child: cart.items.isEmpty
+                      ? Center(
+                          child: Text("Keranjang kosong. Silahkan tambahkan menu.",
+                            style: TextStyle(color: Colors.grey[600])),
+                        )
+                      : ListView.builder(
+                          itemCount: cart.items.length,
+                          itemBuilder: (context, i) {
+                            final item = cart.items[i];
+                            return ListTile(
+                              title: Text(item.itemName, style: const TextStyle(fontWeight: FontWeight.w500, fontSize: 13)),
+                              subtitle: Text("Rp ${NumberFormat.decimalPattern('id_ID').format(item.unitPrice)} / pcs", style: const TextStyle(fontSize: 11)),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  // TOMBOL KURANG (DECREMENT)
+                                  IconButton(
+                                    icon: Icon(
+                                      item.quantity > 1
+                                          ? Icons.remove_circle_outline
+                                          : Icons.delete,
+                                      color: item.quantity > 1
+                                          ? Colors.orange
+                                          : Colors.red,
+                                    ),
+                                    onPressed: () {
+                                      cart.removeItemByOne(item.id);
+                                    },
+                                  ),
+                                  // KUANTITAS
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 4),
+                                    constraints: const BoxConstraints(minWidth: 24),
+                                    alignment: Alignment.center,
+                                    child: Text(
+                                      '${item.quantity}',
+                                      style: const TextStyle(
+                                          fontWeight: FontWeight.bold),
+                                    ),
+                                  ),
+                                  // TOMBOL TAMBAH (INCREMENT)
+                                  IconButton(
+                                    icon: const Icon(Icons.add_circle_outline,
+                                        color: Colors.green),
+                                    onPressed: () {
+                                      cart.incrementItemQuantity(item.id);
+                                    },
+                                  ),
+                                  // TOTAL HARGA ITEM
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    "Rp ${NumberFormat.decimalPattern('id_ID').format(item.totalPrice)}",
+                                    style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        color: Colors.black87),
+                                  ),
+                                ],
                               ),
-                              onPressed: () {
-                                cart.removeItemByOne(item.id);
-                              },
-                            ),
-                            // KUANTITAS
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8),
-                              child: Text(
-                                '${item.quantity}',
-                                style: const TextStyle(fontWeight: FontWeight.bold),
-                              ),
-                            ),
-                            // TOMBOL TAMBAH (INCREMENT)
-                            IconButton(
-                              icon: const Icon(Icons.add_circle_outline, color: Colors.green),
-                              onPressed: () {
-                                cart.incrementItemQuantity(item.id);
-                              },
-                            ),
-                            // TOTAL HARGA ITEM
-                            const SizedBox(width: 8),
-                            Text(
-                              "Rp ${item.totalPrice.toStringAsFixed(0)}",
-                              style: const TextStyle(fontWeight: FontWeight.w600),
-                            ),
-                          ],
+                            );
+                          },
                         ),
-                      );
-                    },
-                  ),
                 ),
-                ElevatedButton(
-                  onPressed: cart.items.isEmpty
-                      ? null
-                      : () async {
-                          // Menyimpan hasil dari navigasi
-                          final result = await Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => OrderConfirmationPageUpdated(
-                                orderItems: List<SaleItem>.from(cart.items),
-                                customerName: widget.customerName,
-                                totalAmount: cart.totalAmount,
-                                tableNumber: widget.tableNumber,
+                // Tombol Checkout (MODERNISASI)
+                Padding(
+                  padding: const EdgeInsets.all(8.0),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.green[700], // Warna Aksi yang kuat
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 16),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10), // Sudut membulat
+                      ),
+                      minimumSize: const Size(double.infinity, 50),
+                      elevation: 5,
+                    ),
+                    onPressed: cart.items.isEmpty
+                        ? null
+                        : () async {
+                            final result = await Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => OrderConfirmationPageUpdated(
+                                  orderItems: List<SaleItem>.from(cart.items),
+                                  customerName: widget.customerName,
+                                  totalAmount: cart.totalAmount,
+                                  tableNumber: widget.tableNumber,
+                                ),
                               ),
-                            ),
-                          );
+                            );
 
-                          // Cek apakah hasil navigasi adalah TRUE (transaksi sukses)
-                          if (result == true) {
-                            StartTransactionDialog.show(context);
-                          }
-                        },
-                  child: const Text("Checkout"),
+                            if (result == true) {
+                              StartTransactionDialog.show(context);
+                            }
+                          },
+                    child: Text(
+                      "Checkout (Rp ${NumberFormat.decimalPattern('id_ID').format(cart.totalAmount)})", // Tampilkan total di tombol
+                      style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
                 ),
               ],
             ),

@@ -17,19 +17,20 @@ class MenuService {
       print('⚡ Menu data already loaded in cache.');
       return; // JANGAN MUAT ULANG JIKA SUDAH ADA
     }
-    
+
     try {
       print('⏳ Starting parallel data loading from Firestore...');
 
       // 1. Ambil semua kategori
       _cachedCategories = await getCategoriesFromFirestore();
-      
+
       List<MenuItem> allItems = [];
-      
+
       // 2. Ambil SEMUA daftar item menu dari SEMUA kategori secara paralel
-      List<Future<List<MenuItem>>> itemFutures = _cachedCategories.map((category) {
+      List<Future<List<MenuItem>>> itemFutures =
+          _cachedCategories.map((category) {
         // Menggunakan fungsi yang sudah ada
-        return getMenuItemsFromFirestore(category.id); 
+        return getMenuItemsFromFirestore(category.id);
       }).toList();
 
       // Tunggu semua daftar item selesai dimuat
@@ -41,7 +42,7 @@ class MenuService {
       // 3. Ambil SEMUA opsi menu untuk SEMUA item secara paralel
       List<Future<List<MenuOption>>> optionFutures = allItems.map((item) {
         // Menggunakan fungsi yang sudah ada
-        return getMenuOptionsFromFirestore(item.id); 
+        return getMenuOptionsFromFirestore(item.id);
       }).toList();
 
       List<List<MenuOption>> optionResults = await Future.wait(optionFutures);
@@ -53,15 +54,15 @@ class MenuService {
       }
 
       // 5. Simpan hasil akhir di cache
-      _cachedAllMenuItems = itemsWithOption; // <--- itemsWithOption kini didefinisikan!
+      _cachedAllMenuItems =
+          itemsWithOption; // <--- itemsWithOption kini didefinisikan!
       _isDataLoaded = true;
       print('✅ All menu data loaded and cached successfully.');
-
     } catch (e) {
       print('❌ Error loading global menu data: $e');
       // Jika gagal, pastikan state reset agar mencoba lagi di lain waktu
-      _isDataLoaded = false; 
-      throw Exception('Failed to load menu data: $e'); 
+      _isDataLoaded = false;
+      throw Exception('Failed to load menu data: $e');
     }
   }
 
@@ -72,13 +73,17 @@ class MenuService {
 
   // Menambahkan/Memperbarui Kategori di Firestore
   Future<void> saveCategory(Category category) async {
-    await _firestore.collection('categories').doc(category.id).set(category.toMap());
+    await _firestore
+        .collection('categories')
+        .doc(category.id)
+        .set(category.toMap());
     await _databaseHelper.insertCategory(category); // Sync to local
   }
 
   // Mendapatkan semua Kategori dari Firestore
   Future<List<Category>> getCategoriesFromFirestore() async {
-    QuerySnapshot querySnapshot = await _firestore.collection('categories').orderBy('name').get();
+    QuerySnapshot querySnapshot =
+        await _firestore.collection('categories').orderBy('name').get();
     return querySnapshot.docs
         .map((doc) => Category.fromMap(doc.data() as Map<String, dynamic>))
         .toList();
@@ -86,7 +91,8 @@ class MenuService {
 
   // Mendapatkan semua Kategori dari SQLite
   Future<List<Category>> getCategoriesFromLocal() async {
-    return await _databaseHelper.getCategories(orderBy: 'name'); // Perlu tambahkan orderBy di DatabaseHelper
+    return await _databaseHelper.getCategories(
+        orderBy: 'name'); // Perlu tambahkan orderBy di DatabaseHelper
   }
 
   // Menghapus Kategori (dan semua item menu terkait)
@@ -105,17 +111,17 @@ class MenuService {
       where: 'id = ?',
       whereArgs: [id],
     );
-    
+
     if (items.isNotEmpty) {
       // Also load the options for this menu item
       final options = await dbHelper.getMenuOptions(
         where: 'menu_item_id = ?',
         whereArgs: [id],
       );
-      
+
       return items.first.copyWith(options: options);
     }
-    
+
     return null;
   }
 
@@ -125,7 +131,7 @@ class MenuService {
       where: 'id = ?',
       whereArgs: [id],
     );
-    
+
     return categories.isNotEmpty ? categories.first : null;
   }
 
@@ -168,12 +174,16 @@ class MenuService {
 
   // Menambahkan/Memperbarui Opsi Menu di Firestore
   Future<void> saveMenuOption(MenuOption option) async {
-    await _firestore.collection('menu_options').doc(option.id).set(option.toMap());
+    await _firestore
+        .collection('menu_options')
+        .doc(option.id)
+        .set(option.toMap());
     await _databaseHelper.insertMenuOption(option); // Sync to local
   }
 
   // Mendapatkan semua Opsi Menu untuk suatu MenuItem dari Firestore
-  Future<List<MenuOption>> getMenuOptionsFromFirestore(String menuItemId) async {
+  Future<List<MenuOption>> getMenuOptionsFromFirestore(
+      String menuItemId) async {
     QuerySnapshot querySnapshot = await _firestore
         .collection('menu_options')
         .where('menu_item_id', isEqualTo: menuItemId)
@@ -197,5 +207,14 @@ class MenuService {
   Future<void> deleteMenuOption(String optionId) async {
     await _firestore.collection('menu_options').doc(optionId).delete();
     await _databaseHelper.deleteMenuOption(optionId);
+  }
+
+  Future<void> clearCache() async {
+    // Clear the in-memory caches
+    _cachedAllMenuItems = [];
+    _cachedCategories = [];
+    _isDataLoaded = false;
+
+    print('Cache menu berhasil dibersihkan.');
   }
 }

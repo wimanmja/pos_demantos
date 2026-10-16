@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'transaction_detail_screen.dart';
+import 'package:intl/intl.dart';
 
 class TransactionHistoryScreen extends StatefulWidget {
   const TransactionHistoryScreen({super.key});
@@ -22,19 +23,16 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   @override
   void initState() {
     super.initState();
-    _calculateTotals();
+    _calculateTotals(); // Pastikan ini dipanggil
   }
 
-  // Parse tanggal transaksi (lebih sederhana)
+  // Parse tanggal transaksi
   DateTime _parseTransactionDate(dynamic transactionDate) {
-    if (transactionDate is Timestamp) {
-      return transactionDate.toDate();
-    }
-    // Jika tidak ada data lama, ini adalah fallback yang aman
+    if (transactionDate is Timestamp) return transactionDate.toDate();
     return DateTime.now(); 
   }
 
-  // Parse total amount agar aman dari int, double, String, null
+  // Parse total amount
   double _parseTotal(dynamic totalAmount) {
     if (totalAmount is int) return totalAmount.toDouble();
     if (totalAmount is double) return totalAmount;
@@ -43,24 +41,19 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
   }
 
   Future<void> _calculateTotals() async {
-    // Hanya gunakan collection BARU
     final newRef = FirebaseFirestore.instance.collection('sales_transactions_baru');
     final now = DateTime.now();
     
-    // Ambil semua dokumen dari awal tahun untuk perhitungan klien yang efisien
     final startOfYear = DateTime(now.year, 1, 1);
     final endOfNextYear = DateTime(now.year + 1, 1, 1); 
 
     try {
-      // Query Data BARU (Timestamp) - Filter di Firestore untuk efisiensi
       final yearlySnap = await newRef
           .where('transaction_date', isGreaterThanOrEqualTo: Timestamp.fromDate(startOfYear))
           .where('transaction_date', isLessThan: Timestamp.fromDate(endOfNextYear))
           .get();
           
-      final allDocs = yearlySnap.docs; // Hanya dari satu sumber
-      
-      // ... (sisa logika perhitungan dailyTotal, monthlyTotal, yearlyTotal tetap sama)
+      final allDocs = yearlySnap.docs; 
 
       double dailyTotal = 0;
       double monthlyTotal = 0;
@@ -69,9 +62,8 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
       final startOfMonth = DateTime(now.year, now.month, 1);
 
       for (var doc in allDocs) {
-          final data = doc.data() as Map<String, dynamic>;
+          final data = doc.data();
           final total = _parseTotal(data['total_amount']);
-          // Karena semua data baru sudah Timestamp, parsing lebih aman
           final date = (data['transaction_date'] as Timestamp).toDate(); 
           
           yearlyTotal += total;
@@ -127,8 +119,9 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
         title: const Text('Histori Transaksi'),
       ),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // FILTER TANGGAL
+          // 1. TOMBOL FILTER TANGGAL
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 8.0),
             child: Row(
@@ -152,55 +145,56 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                         : '${selectedDateRange!.start.toLocal().toString().split(' ')[0]} - ${selectedDateRange!.end.toLocal().toString().split(' ')[0]}'),
                   ),
                 ),
+                // Tombol Reset Filter (Opsional tapi berguna)
+                if (selectedDateRange != null)
+                  IconButton(
+                    icon: const Icon(Icons.clear, color: Colors.red),
+                    onPressed: () => setState(() => selectedDateRange = null),
+                  )
               ],
             ),
           ),
 
           const SizedBox(height: 8),
 
-          // TOTAL PENJUALAN
+          // 2. TAMPILAN TOTAL GLOBAL (Selalu Tampil)
           Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 0),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Total Hari Ini: Rp ${totalToday.toStringAsFixed(0)}'),
-                Text('Total Bulan Ini: Rp ${totalMonth.toStringAsFixed(0)}'),
-                Text('Total Tahun Ini: Rp ${totalYear.toStringAsFixed(0)}'),
+                Text('Total Hari Ini: Rp ${NumberFormat.decimalPattern('id_ID').format(totalToday)}', style: const TextStyle(fontWeight: FontWeight.w500)),
+                Text('Total Bulan Ini: Rp ${NumberFormat.decimalPattern('id_ID').format(totalMonth)}', style: const TextStyle(fontWeight: FontWeight.w500)),
+                Text('Total Tahun Ini: Rp ${NumberFormat.decimalPattern('id_ID').format(totalYear)}', style: const TextStyle(fontWeight: FontWeight.w500)),
               ],
             ),
           ),
 
-          const SizedBox(height: 8),
+          const Divider(height: 24, thickness: 1),
 
-          // LIST TRANSAKSI
+          // 3. LIST TRANSAKSI & HASIL FILTER DINAMIS
           Expanded(
-            child: StreamBuilder<QuerySnapshot>( // Kembali ke StreamBuilder
+            child: StreamBuilder<QuerySnapshot>(
               stream: () {
-                // 1. Inisialisasi query ke collection BARU
                 Query transactionsQuery = FirebaseFirestore.instance
                     .collection('sales_transactions_baru')
                     .orderBy('transaction_date', descending: true);
                 
-                // 2. Terapkan Filter Tanggal
                 if (selectedDateRange != null) {
                   final startDate = selectedDateRange!.start;
                   final endDate = selectedDateRange!.end.add(const Duration(days: 1)); 
 
                   transactionsQuery = transactionsQuery
-                      .where('transaction_date',
-                          isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
-                      .where('transaction_date',
-                          isLessThan: Timestamp.fromDate(endDate)); 
+                      .where('transaction_date', isGreaterThanOrEqualTo: Timestamp.fromDate(startDate))
+                      .where('transaction_date', isLessThan: Timestamp.fromDate(endDate)); 
                 }
                 return transactionsQuery.snapshots();
-              }(), // Panggil fungsi anonim ini untuk mendapatkan stream
+              }(),
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(child: CircularProgressIndicator());
                 }
                 
-                // Jika Anda ingin menangani error (opsional)
                 if (snapshot.hasError) {
                   return Center(child: Text('Error memuat data: ${snapshot.error}'));
                 }
@@ -209,47 +203,68 @@ class _TransactionHistoryScreenState extends State<TransactionHistoryScreen> {
                   return const Center(child: Text('Tidak ada transaksi'));
                 }
 
-                // Filter di klien (Pelanggan/Kasir)
                 final transactions = snapshot.data!.docs.where((doc) {
                   final data = doc.data() as Map<String, dynamic>;
-                  final customer_name = (data['customer_name'] ?? '').toString().toLowerCase();
-                  
-                  return customer_name.contains(searchCustomer);
+                  final customerNameStr = (data['customer_name'] ?? '').toString().toLowerCase();
+                  return customerNameStr.contains(searchCustomer);
                 }).toList();
 
                 if (transactions.isEmpty) {
-                  return const Center(child: Text('Item tidak ditemukan'));
+                  return const Center(child: Text('Transaksi tidak ditemukan'));
                 }
-                
-                return ListView.builder(
-                  itemCount: transactions.length,
-                  itemBuilder: (context, index) {
-                    final data = transactions[index].data() as Map<String, dynamic>;
-                    final date = _parseTransactionDate(data['transaction_date']);
-                    final total = _parseTotal(data['total_amount']);
 
-                    return ListTile(
-                      title: Text(data['customer_name'] ?? '-'),
-                      subtitle: Text(
-                          'Tanggal: ${date.toLocal().toString().split(' ')[0]} ${date.toLocal().toString().split(' ')[1].split('.')[0]}'),
-                      trailing: Text('Rp ${total.toStringAsFixed(0)}'),
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (context) => TransactionDetailScreen(
-                                transactionId: transactions[index].id),
-                          ),
-                        );
-                      },
-                    );
-                  },
+                // Hitung total dari transaksi yang tampil di list (berguna saat difilter)
+                double filteredTotal = transactions.fold(0.0, (sum, doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  return sum + _parseTotal(data['total_amount']);
+                });
+                
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // HANYA TAMPIL JIKA FILTER TANGGAL AKTIF
+                    if (selectedDateRange != null)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 16.0, right: 16.0, bottom: 8.0),
+                        child: Text(
+                          'Total Hasil Filter: Rp ${NumberFormat.decimalPattern('id_ID').format(filteredTotal)}',
+                          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.blue[800]),
+                        ),
+                      ),
+                      
+                    Expanded(
+                      child: ListView.builder(
+                        itemCount: transactions.length,
+                        itemBuilder: (context, index) {
+                          final data = transactions[index].data() as Map<String, dynamic>;
+                          final date = _parseTransactionDate(data['transaction_date']);
+                          final total = _parseTotal(data['total_amount']);
+
+                          return ListTile(
+                            title: Text(data['customer_name'] ?? 'Pelanggan Umum'),
+                            subtitle: Text(
+                                'Tanggal: ${date.toLocal().toString().split(' ')[0]} ${date.toLocal().toString().split(' ')[1].split('.')[0]}'),
+                            trailing: Text('Rp ${NumberFormat.decimalPattern('id_ID').format(total)}', style: const TextStyle(fontWeight: FontWeight.bold)),
+                            onTap: () {
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) => TransactionDetailScreen(
+                                      transactionId: transactions[index].id),
+                                ),
+                              );
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                  ],
                 );
               },
             ),
           ),
         ],
-      ),
+      )
     );
   }
 }

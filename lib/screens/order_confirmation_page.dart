@@ -1,16 +1,18 @@
+import 'dart:async';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:intl/intl.dart';
+import 'package:pos_demantos/models/sale_item_model.dart';
+import 'package:pos_demantos/models/sale_transaction_model.dart';
 import 'package:pos_demantos/provider/cart_provider.dart';
+import 'package:pos_demantos/services/sale_service.dart'; // Diperlukan jika SaleService digunakan di tempat lain
+import 'package:pos_demantos/services/printer_manager_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:provider/provider.dart';
 import 'package:uuid/uuid.dart';
-// Pastikan semua model di bawah ini tersedia di path yang benar
-import '../models/sale_transaction_model.dart';
-import '../models/sale_item_model.dart';
-import '../services/sale_service.dart'; // Diperlukan jika SaleService digunakan di tempat lain
-import '../services/printer_manager_service.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 // Asumsi: Enum PrinterStatus didefinisikan di printer_manager_service.dart
+// Asumsi: StartTransactionDialog.show() tersedia
 
 class OrderConfirmationPageUpdated extends StatefulWidget {
   final List<SaleItem> orderItems;
@@ -52,6 +54,7 @@ class _OrderConfirmationPageUpdatedState
     _initializePrinterStatus();
   }
 
+  // --- PRINTER STATUS & INIT ---
   void _initializePrinterStatus() {
     // Ambil status awal
     _printerStatus = _printerService.currentStatus;
@@ -72,14 +75,20 @@ class _OrderConfirmationPageUpdatedState
     super.dispose();
   }
 
+  // --- LOGIC PERHITUNGAN ---
   void _updateChange() {
     setState(() {
       _cashPaid = double.tryParse(_cashPaidController.text) ?? 0.0;
       _changeGiven = _cashPaid - widget.totalAmount;
     });
   }
+  
+  // Menghitung total kuantitas item yang dipesan
+  int _getTotalItemCount() {
+    return widget.orderItems.fold(0, (sum, item) => sum + item.quantity);
+  }
 
-  // Fungsi utama untuk memproses pembayaran dan menyimpan transaksi
+  // --- LOGIC PEMROSESAN TRANSAKSI ---
   Future<void> _processPayment() async {
     setState(() {
       _isProcessing = true;
@@ -87,9 +96,11 @@ class _OrderConfirmationPageUpdatedState
     
     // Validasi pembayaran tunai
     if (_paymentMethod == 'tunai' && _changeGiven < 0) {
-        if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Uang tunai yang diberikan tidak cukup.')),
-        );
+          );
+        }
         setState(() => _isProcessing = false);
         return;
     }
@@ -120,7 +131,7 @@ class _OrderConfirmationPageUpdatedState
       // 4️⃣ Simpan semua sale items di subcollection
       final items = widget.orderItems.map((sale) {
         return sale.copyWith(
-          id: '${transaction.id}_${sale.menuItemId}',
+          id: '${transaction.id}_${sale.menuItemId}_${DateTime.now().millisecondsSinceEpoch}', // ID yang lebih unik
           transactionId: transaction.id,
           totalPrice: sale.unitPrice * sale.quantity,
           createdAt: DateTime.now(),
@@ -150,7 +161,7 @@ class _OrderConfirmationPageUpdatedState
               : 'Gagal mencetak struk. Transaksi berhasil disimpan.';
       } else {
           // Status printer tidak siap
-          printMessage = 'Gagal mencetak struk.';
+          printMessage = 'Gagal mencetak struk (Printer ${_getPrinterStatusText().toLowerCase()}).';
           printSuccess = false;
       }
 
@@ -162,9 +173,11 @@ class _OrderConfirmationPageUpdatedState
       );
 
     } catch (e) {
-      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Gagal menyimpan transaksi: $e')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Gagal menyimpan transaksi: $e')),
+        );
+      }
     } finally {
       setState(() {
         _isProcessing = false;
@@ -191,6 +204,7 @@ class _OrderConfirmationPageUpdatedState
     }
   }
 
+  // --- UI DIALOG ---
   Future<void> _showSuccessDialog(
       bool printSuccess, String printMessage, String transactionId) async {
     return showDialog<void>(
@@ -209,10 +223,10 @@ class _OrderConfirmationPageUpdatedState
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text('Total: Rp ${widget.totalAmount.toStringAsFixed(0)}'),
+              Text('Total: Rp ${NumberFormat.decimalPattern('id_ID').format(widget.totalAmount)}', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               if (_paymentMethod == 'tunai') ...[
-                Text('Tunai: Rp ${_cashPaid.toStringAsFixed(0)}'),
-                Text('Kembalian: Rp ${_changeGiven.toStringAsFixed(0)}'),
+                Text('Tunai: Rp ${NumberFormat.decimalPattern('id_ID').format(_cashPaid)}'),
+                Text('Kembalian: Rp ${NumberFormat.decimalPattern('id_ID').format(_changeGiven)}'),
               ],
               const SizedBox(height: 12),
               Row(
@@ -229,12 +243,13 @@ class _OrderConfirmationPageUpdatedState
                       style: TextStyle(
                         color:
                             printSuccess ? Colors.green[600] : Colors.red[600],
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ),
                 ],
               ),
-              if (!printSuccess) ...[
+              if (!printSuccess && _printerStatus != PrinterStatus.ready) ...[
                 const SizedBox(height: 8),
                 Text(
                   'Transaksi telah disimpan. Anda dapat mencetak ulang dari menu laporan.',
@@ -247,17 +262,19 @@ class _OrderConfirmationPageUpdatedState
             ],
           ),
           actions: [
-            if (!printSuccess && _printerService.currentStatus != PrinterStatus.ready)
+            if (!printSuccess && _printerStatus != PrinterStatus.ready)
               TextButton(
                 onPressed: () async {
                   Navigator.of(dialogContext).pop();
                   await _printerService.retryConnection();
-                  if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(
-                        content: Text('Mencoba menghubungkan printer...')),
-                  );
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                          content: Text('Mencoba menghubungkan printer...')),
+                    );
+                  }
                 },
-                child: const Text('Coba Print Lagi'),
+                child: const Text('Retry Print'),
               ),
             ElevatedButton(
               onPressed: () {
@@ -269,7 +286,7 @@ class _OrderConfirmationPageUpdatedState
                 backgroundColor: Colors.green,
                 foregroundColor: Colors.white,
               ),
-              child: const Text('OK'),
+              child: const Text('Selesai'),
             ),
           ],
         );
@@ -297,12 +314,14 @@ class _OrderConfirmationPageUpdatedState
       'paymentMethod': _paymentMethod,
       'tableNumber': widget.tableNumber,
       'customerName': widget.customerName,
+      'totalItemsCount': _getTotalItemCount(), // TAMBAHAN: Jumlah total item
     };
   }
 
+  // --- HELPER UI ---
   String _getPrinterStatusText() {
     switch (_printerStatus) {
-      case PrinterStatus.ready: return "Printer Ready";
+      case PrinterStatus.ready: return "Ready";
       case PrinterStatus.searching: return "Searching";
       case PrinterStatus.connecting: return "Connecting";
       case PrinterStatus.printing: return "Printing";
@@ -339,17 +358,17 @@ class _OrderConfirmationPageUpdatedState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Konfirmasi Pesanan'),
-        backgroundColor: Colors.blue,
+        title: const Text('Konfirmasi Pembayaran', style: TextStyle(fontWeight: FontWeight.w600)),
+        backgroundColor: Colors.blue[700],
         foregroundColor: Colors.white,
         actions: [
-          // Printer Status Indicator
+          // Printer Status Indicator (Diperbarui agar lebih ringkas)
           Container(
-            margin: const EdgeInsets.only(right: 16),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            margin: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              color: _getPrinterStatusColor().withOpacity(0.2),
-              borderRadius: BorderRadius.circular(12),
+              color: _getPrinterStatusColor().withOpacity(0.15),
+              borderRadius: BorderRadius.circular(8),
               border: Border.all(color: _getPrinterStatusColor()),
             ),
             child: Row(
@@ -365,113 +384,132 @@ class _OrderConfirmationPageUpdatedState
       ),
       body: Column(
         children: [
-          // Printer Warning Banner
+          // Printer Warning Banner (Diperbarui)
           if (_printerStatus != PrinterStatus.ready)
             Container(
               width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              color: Colors.orange[50],
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              color: Colors.orange[100],
               child: Row(
                 children: [
-                  Icon(Icons.warning_amber, color: Colors.orange[700], size: 20),
-                  const SizedBox(width: 8),
+                  Icon(Icons.warning_amber, color: Colors.orange[800], size: 20),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      'Printer ${_getPrinterStatusText().toLowerCase()}. Transaksi akan diproses tanpa mencetak struk.',
-                      style: TextStyle( color: Colors.orange[700], fontSize: 14),
+                      'Printer ${_getPrinterStatusText().toLowerCase()}. Transaksi tersimpan, struk tidak dicetak.',
+                      style: TextStyle( color: Colors.orange[800], fontSize: 13, fontWeight: FontWeight.w500),
                     ),
                   ),
                   TextButton(
                     onPressed: () => _printerService.retryConnection(),
-                    child: const Text('Retry'),
+                    child: const Text('Retry', style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
             ),
 
-          // Order Summary Header
+          // Order Summary Header (Lebih Rapi)
           Container(
             width: double.infinity,
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
-              color: Colors.blue[50],
+              color: Colors.grey[50],
               border: Border(bottom: BorderSide(color: Colors.grey[300]!)),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Text('Detail Pesanan', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                if (widget.tableNumber != null)
-                  Row(
-                    children: [
-                      const Icon(Icons.table_restaurant, size: 16, color: Colors.grey),
-                      const SizedBox(width: 4),
-                      Text('Meja: ${widget.tableNumber}'),
-                    ],
-                  ),
-                if (widget.customerName != null)
-                  Row(
-                    children: [
-                      const Icon(Icons.person, size: 16, color: Colors.grey),
-                      const SizedBox(width: 4),
-                      Text('Pelanggan: ${widget.customerName}'),
-                    ],
-                  ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Ringkasan Pesanan', style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold, color: Colors.black87)),
+                    const SizedBox(height: 4),
+                    // TAMBAHAN: Tampilkan Jumlah Item
+                    Text('Total Item: ${_getTotalItemCount()}', style: const TextStyle(fontSize: 14, color: Colors.blueGrey)),
+                  ],
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    if (widget.tableNumber != null)
+                      Row(
+                        children: [
+                          const Icon(Icons.table_restaurant, size: 14, color: Colors.blue),
+                          const SizedBox(width: 4),
+                          Text('Meja: ${widget.tableNumber}', style: const TextStyle(fontSize: 13)),
+                        ],
+                      ),
+                    if (widget.customerName != null)
+                      Row(
+                        children: [
+                          const Icon(Icons.person, size: 14, color: Colors.blue),
+                          const SizedBox(width: 4),
+                          Text('Pelanggan: ${widget.customerName}', style: const TextStyle(fontSize: 13)),
+                        ],
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
 
-          // Order Items List
+          // Order Items List (Lebih Ringkas)
           Expanded(
             child: ListView.builder(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               itemCount: widget.orderItems.length,
               itemBuilder: (context, index) {
                 final SaleItem sale = widget.orderItems[index];
                 final String itemName = sale.itemName;
                 final int quantity = sale.quantity;
-                final double unitPrice = sale.unitPrice;
                 final double totalItemPrice = sale.totalPrice;
 
-                return Card(
-                  margin: const EdgeInsets.only(bottom: 8),
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Row(
-                      children: [
-                        // Item details
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(itemName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                              Text('Rp ${unitPrice.toStringAsFixed(0)} x $quantity', style: TextStyle(color: Colors.grey[600], fontSize: 14)),
-                            ],
-                          ),
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Kuantitas
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: Colors.blue, width: 0.5)
                         ),
-                        // Total price
-                        Text('Rp ${totalItemPrice.toStringAsFixed(0)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                      ],
-                    ),
+                        child: Text('$quantity x', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.blue)),
+                      ),
+                      const SizedBox(width: 10),
+                      // Item details
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(itemName, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
+                            Text('Rp ${NumberFormat.decimalPattern('id_ID').format(sale.unitPrice)} / unit', style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                          ],
+                        ),
+                      ),
+                      // Total price
+                      Text('Rp ${NumberFormat.decimalPattern('id_ID').format(totalItemPrice)}', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                    ],
                   ),
                 );
               },
             ),
           ),
 
-          // Payment Section
+          // Payment Section (Footer)
           Container(
-            padding: const EdgeInsets.all(16),
+            padding: const EdgeInsets.all(10.1),
             decoration: BoxDecoration(
               color: Colors.white,
               border: Border(top: BorderSide(color: Colors.grey[300]!)),
               boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withOpacity(0.1),
-                  spreadRadius: 1,
-                  blurRadius: 5,
-                  offset: const Offset(0, -2),
+                const BoxShadow(
+                  color: Colors.black12,
+                  blurRadius: 6,
+                  offset: Offset(0, -3),
                 ),
               ],
             ),
@@ -481,8 +519,8 @@ class _OrderConfirmationPageUpdatedState
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text('Total Pembayaran:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                    Text('Rp ${widget.totalAmount.toStringAsFixed(0)}', style: const TextStyle( fontSize: 20, fontWeight: FontWeight.bold, color: Colors.blue)),
+                    const Text('TOTAL TAGIHAN:', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                    Text('Rp ${NumberFormat.decimalPattern('id_ID').format(widget.totalAmount)}', style: const TextStyle( fontSize: 22, fontWeight: FontWeight.bold, color: Colors.redAccent)),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -490,7 +528,11 @@ class _OrderConfirmationPageUpdatedState
                 // Payment Method
                 DropdownButtonFormField<String>(
                   value: _paymentMethod,
-                  decoration: const InputDecoration( labelText: 'Metode Pembayaran', border: OutlineInputBorder()),
+                  decoration: const InputDecoration( 
+                    labelText: 'Metode Pembayaran', 
+                    prefixIcon: Icon(Icons.payment),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))),
+                  ),
                   items: const [
                     DropdownMenuItem(value: 'tunai', child: Text('Tunai')),
                     DropdownMenuItem(value: 'qris', child: Text('QRIS')),
@@ -498,6 +540,10 @@ class _OrderConfirmationPageUpdatedState
                   onChanged: (value) {
                     setState(() {
                       _paymentMethod = value ?? 'tunai';
+                      // Reset cash paid saat ganti metode
+                      if (_paymentMethod != 'tunai') {
+                          _cashPaidController.clear();
+                      }
                     });
                   },
                 ),
@@ -506,18 +552,25 @@ class _OrderConfirmationPageUpdatedState
                   const SizedBox(height: 16),
                   TextField(
                     controller: _cashPaidController,
-                    decoration: const InputDecoration( labelText: 'Uang Tunai Diberikan', border: OutlineInputBorder(), prefixText: 'Rp '),
+                    decoration: const InputDecoration( 
+                      labelText: 'Uang Diterima', 
+                      border: OutlineInputBorder(borderRadius: BorderRadius.all(Radius.circular(10))), 
+                      prefixText: 'Rp ',
+                      suffixText: 'Wajib Diisi'
+                    ),
                     keyboardType: TextInputType.number,
                   ),
-                  const SizedBox(height: 8),
+                  const SizedBox(height: 12),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('Kembalian:'),
-                      Text('Rp ${_changeGiven.toStringAsFixed(0)}', style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                          color: _changeGiven >= 0 ? Colors.green : Colors.red,
+                      const Text('Kembalian:', style: TextStyle(fontSize: 16)),
+                      Text(
+                        'Rp ${NumberFormat.decimalPattern('id_ID').format(_changeGiven)}', 
+                        style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                            color: _changeGiven >= 0 ? Colors.green[700] : Colors.red[700],
                         ),
                       ),
                     ],
@@ -530,17 +583,17 @@ class _OrderConfirmationPageUpdatedState
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: Colors.orange[50],
-                      border: Border.all(color: Colors.orange[200]!),
-                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange[300]!),
+                      borderRadius: BorderRadius.circular(10),
                     ),
                     child: Row(
                       children: [
                         Icon(Icons.qr_code, color: Colors.orange[700]),
-                        const SizedBox(width: 8),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: Text(
-                            'Mohon scan QR code untuk pembayaran Rp ${widget.totalAmount.toStringAsFixed(0)}',
-                            style: TextStyle(color: Colors.orange[700]),
+                            'Bayar melalui QRIS. Total: Rp ${NumberFormat.decimalPattern('id_ID').format(widget.totalAmount)}',
+                            style: TextStyle(color: Colors.orange[800], fontWeight: FontWeight.w600),
                           ),
                         ),
                       ],
@@ -550,16 +603,19 @@ class _OrderConfirmationPageUpdatedState
 
                 const SizedBox(height: 20),
 
-                // Pay Button
+                // Pay Button (Lebih Menonjol)
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _isProcessing ? null : _processPayment,
+                    onPressed: _isProcessing || (_paymentMethod == 'tunai' && _changeGiven < 0) ? null : _processPayment,
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
+                      backgroundColor: Colors.green[600],
                       foregroundColor: Colors.white,
                       padding: const EdgeInsets.symmetric(vertical: 16),
-                      textStyle: const TextStyle( fontSize: 18, fontWeight: FontWeight.bold),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      elevation: 5,
                     ),
                     child: _isProcessing
                         ? const Row(
@@ -569,22 +625,25 @@ class _OrderConfirmationPageUpdatedState
                                 width: 20,
                                 height: 20,
                                 child: CircularProgressIndicator(
-                                  strokeWidth: 2,
+                                  strokeWidth: 3,
                                   valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
                                 ),
                               ),
-                              SizedBox(width: 10),
-                              Text('Memproses...'),
+                              SizedBox(width: 12),
+                              Text('Memproses Transaksi...', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
                             ],
                           )
                         : Row(
                             mainAxisAlignment: MainAxisAlignment.center,
                             children: [
-                              Icon(_getPrinterStatusIcon()),
-                              const SizedBox(width: 8),
-                              Text(_printerStatus == PrinterStatus.ready
-                                  ? 'Bayar & Cetak Struk'
-                                  : 'Bayar (Tanpa Cetak)'),
+                              Icon(_getPrinterStatusIcon(), size: 22),
+                              const SizedBox(width: 10),
+                              Text(
+                                _paymentMethod == 'tunai'
+                                    ? 'Bayar & Cetak'
+                                    : 'Bayar QRIS & Cetak',
+                                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                              ),
                             ],
                           ),
                   ),
